@@ -1,43 +1,62 @@
 /**
- * NEXUS POLYBOT — Supabase Direct Client
- * Queries Supabase REST API from the browser using anon key.
- * No backend needed — RLS policies allow public reads.
+ * NEXUS POLYBOT — Supabase Direct Client v2.0
+ * Queries Supabase REST API efficiently using count headers
+ * instead of fetching all rows. Handles 5000+ trades.
  */
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 
-const headers = {
+const baseHeaders = {
   apikey: SUPABASE_KEY,
   Authorization: `Bearer ${SUPABASE_KEY}`,
 };
 
-async function query(table, params = {}) {
+async function query(table, params = {}, extraHeaders = {}) {
   const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const r = await fetch(url.toString(), { headers });
+  const r = await fetch(url.toString(), { headers: { ...baseHeaders, ...extraHeaders } });
   if (!r.ok) throw new Error(`Supabase ${r.status}: ${r.statusText}`);
-  return r.json();
+  return { data: await r.json(), headers: r.headers };
 }
 
-export async function fetchSummary() {
-  const [trades, bankrollRows] = await Promise.all([
-    query("trades", { select: "id,outcome,pnl,brier_score" }),
-    query("bankroll", { select: "balance", order: "id.desc", limit: "1" }),
-  ]);
+async function countWhere(table, filters = {}) {
+  const params = { select: "id", ...filters };
+  const { headers } = await query(table, params, {
+    Prefer: "count=exact",
+    Range: "0-0",
+  });
+  const range = headers.get("content-range") || "0-0/0";
+  return parseInt(range.split("/")[1]) || 0;
+}
 
-  const total = trades.length;
-  const won = trades.filter((t) => t.outcome === "win").length;
-  const lost = trades.filter((t) => t.outcome === "loss").length;
-  const pending = trades.filter((t) => t.outcome === "pending").length;
-  const skipped = trades.filter((t) => t.outcome === "skip" || t.outcome === "skipped").length;
-  const pnlVals = trades.filter((t) => t.pnl != null).map((t) => t.pnl);
-  const pnl = pnlVals.reduce((a, b) => a + b, 0);
-  const brierVals = trades.filter((t) => t.brier_score && t.brier_score > 0).map((t) => t.brier_score);
-  const brier = brierVals.length ? brierVals.reduce((a, b) => a + b, 0) / brierVals.length : 0;
-  const winPnls = trades.filter((t) => t.outcome === "win" && t.pnl).map((t) => t.pnl);
-  const best = winPnls.length ? Math.max(...winPnls) : 0;
+async function queryAll(table, params = {}) {
+  // Fetch up to 10000 rows by setting Range header
+  const { data } = await query(table, params, { Range: "0-9999" });
+  return data;
+}
+
+/* ─── Summary (uses count queries — no big fetches) ─── */
+export async function fetchSummary() {
+  const [total, won, lost, pending, skipped, bankrollRows, pnlData, brierData] =
+    await Promise.all([
+      countWhere("trades"),
+      countWhere("trades", { outcome: "eq.win" }),
+      countWhere("trades", { outcome: "eq.loss" }),
+      countWhere("trades", { outcome: "eq.pending" }),
+      countWhere("trades", { outcome: "eq.skipped" }),
+      queryAll("bankroll", { select: "balance", order: "id.desc", limit: "1" }),
+      queryAll("trades", { select: "pnl", "pnl": "not.is.null", limit: "10000" }),
+      queryAll("trades", { select: "brier_score", "brier_score": "gt.0", limit: "10000" }),
+    ]);
+
+  const pnl = pnlData.reduce((a, r) => a + (r.pnl || 0), 0);
+  const brier = brierData.length
+    ? brierData.reduce((a, r) => a + r.brier_score, 0) / brierData.length
+    : 0;
   const bankroll = bankrollRows.length ? bankrollRows[0].balance : 10.0;
+  const bestData = pnlData.filter((r) => r.pnl > 0);
+  const best = bestData.length ? Math.max(...bestData.map((r) => r.pnl)) : 0;
 
   return {
     total,
@@ -53,20 +72,28 @@ export async function fetchSummary() {
   };
 }
 
+/* ─── Strategies (fetches only needed columns) ─── */
 export async function fetchStrategies() {
-  const trades = await query("trades", {
+  const trades = await queryAll("trades", {
     select: "strategy,outcome,pnl,brier_score,confianza,ev",
   });
 
   const map = {};
   for (const t of trades) {
     const s = t.strategy || "unknown";
-    if (!map[s]) map[s] = { total: 0, won: 0, lost: 0, pnl: 0, brierSum: 0, brierN: 0, confSum: 0, evSum: 0 };
+    if (!map[s])
+      map[s] = {
+        total: 0, won: 0, lost: 0, pnl: 0,
+        brierSum: 0, brierN: 0, confSum: 0, evSum: 0,
+      };
     map[s].total++;
     if (t.outcome === "win") map[s].won++;
     if (t.outcome === "loss") map[s].lost++;
     if (t.pnl != null) map[s].pnl += t.pnl;
-    if (t.brier_score && t.brier_score > 0) { map[s].brierSum += t.brier_score; map[s].brierN++; }
+    if (t.brier_score && t.brier_score > 0) {
+      map[s].brierSum += t.brier_score;
+      map[s].brierN++;
+    }
     map[s].confSum += t.confianza || 0;
     map[s].evSum += t.ev || 0;
   }
@@ -86,16 +113,22 @@ export async function fetchStrategies() {
     }));
 }
 
+/* ─── Recent Trades (only last N) ─── */
 export async function fetchRecentTrades(limit = 50) {
-  return query("trades", {
-    select: "id,market_name,strategy,confianza,stake,ev,odds,outcome,pnl,created_at,league",
+  const data = await queryAll("trades", {
+    select:
+      "id,market_name,strategy,confianza,stake,ev,odds,outcome,pnl,created_at,league",
     order: "id.desc",
     limit: String(limit),
   });
+  return data;
 }
 
+/* ─── Timeline (fetch minimal columns) ─── */
 export async function fetchTimeline() {
-  const trades = await query("trades", { select: "created_at,outcome,pnl" });
+  const trades = await queryAll("trades", {
+    select: "created_at,outcome,pnl",
+  });
   const hours = {};
   for (const t of trades) {
     const ca = t.created_at || "";
@@ -107,16 +140,20 @@ export async function fetchTimeline() {
   }
   return Object.entries(hours)
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([hour, d]) => ({ hour, ...d, pnl: Math.round(d.pnl * 100) / 100 }));
+    .map(([hour, d]) => ({
+      hour,
+      ...d,
+      pnl: Math.round(d.pnl * 100) / 100,
+    }));
 }
 
+/* ─── Bankroll History ─── */
 export async function fetchBankrollHistory() {
-  const rows = await query("bankroll", {
+  return queryAll("bankroll", {
     select: "id,balance,note,timestamp",
     order: "id.asc",
     limit: "200",
   });
-  return rows;
 }
 
 export function isConfigured() {
