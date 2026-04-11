@@ -1,13 +1,18 @@
 """
-NEXUS POLYBOT Dashboard API
-FastAPI backend que lee trades.db en tiempo real.
-Columns match actual DB schema: bankroll(id,timestamp,balance,note),
+NEXUS POLYBOT Dashboard API — Dual Mode v2.0
+FastAPI backend que lee datos de SQLite (local) o Supabase (produccion).
+
+Modo local:  DB_PATH apunta a trades.db  |  USE_SUPABASE=false (default)
+Modo prod:   SUPABASE_URL + SUPABASE_SERVICE_KEY  |  USE_SUPABASE=true
+
+Columns: bankroll(id,timestamp,balance,note),
 patterns(id,created_at,pattern_type,description,confidence,sample_size,action_taken,still_valid)
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import os
+import requests
 from datetime import datetime
 
 app = FastAPI(title="NEXUS POLYBOT API")
@@ -19,17 +24,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Config ---
 DB_PATH = os.getenv("DB_PATH", "../polybot/trades.db")
+USE_SUPABASE = os.getenv("USE_SUPABASE", "false").lower() in ("true", "1", "yes")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
+
+# --- Data access layer ---
 
 def get_db():
+    """SQLite connection (local mode)."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def supa_query(table: str, select: str = "*", params: dict = None) -> list[dict]:
+    """Query Supabase REST API. Returns list of dicts."""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+    }
+    query_params = {"select": select}
+    if params:
+        query_params.update(params)
+    r = requests.get(url, headers=headers, params=query_params, timeout=15)
+    if r.ok:
+        return r.json()
+    return []
+
+
+def supa_rpc(func_name: str, params: dict = None) -> any:
+    """Call a Supabase RPC function."""
+    url = f"{SUPABASE_URL}/rest/v1/rpc/{func_name}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(url, headers=headers, json=params or {}, timeout=15)
+    if r.ok:
+        return r.json()
+    return None
+
+
+# --- Endpoints ---
+
 @app.get("/api/summary")
 def get_summary():
+    if USE_SUPABASE:
+        return _summary_supabase()
+    return _summary_sqlite()
+
+
+def _summary_sqlite():
     conn = get_db()
     total   = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     won     = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome='win'").fetchone()[0]
@@ -53,14 +103,55 @@ def get_summary():
         "win_rate":  win_rate,
         "brier":     round(brier, 4),
         "best_trade": round(best or 0, 2),
-        "progress":  round(total / 5000 * 100, 1),
-        "target":    5000,
+        "progress":  total,
+        "target":    "infinite",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+def _summary_supabase():
+    trades = supa_query("trades", "id,outcome,pnl,brier_score")
+    total = len(trades)
+    won = sum(1 for t in trades if t.get("outcome") == "win")
+    lost = sum(1 for t in trades if t.get("outcome") == "loss")
+    pending = sum(1 for t in trades if t.get("outcome") == "pending")
+    skipped = sum(1 for t in trades if t.get("outcome") == "skip")
+    pnl_vals = [t["pnl"] for t in trades if t.get("pnl") is not None]
+    pnl = sum(pnl_vals) if pnl_vals else 0
+    brier_vals = [t["brier_score"] for t in trades if t.get("brier_score") and t["brier_score"] > 0]
+    brier = sum(brier_vals) / len(brier_vals) if brier_vals else 0
+    win_pnls = [t["pnl"] for t in trades if t.get("outcome") == "win" and t.get("pnl")]
+    best = max(win_pnls) if win_pnls else 0
+
+    bankroll_rows = supa_query("bankroll", "balance", {"order": "id.desc", "limit": "1"})
+    bankroll = bankroll_rows[0]["balance"] if bankroll_rows else 10.0
+
+    win_rate = round(won / max(won + lost, 1) * 100, 1)
+    return {
+        "total":     total,
+        "won":       won,
+        "lost":      lost,
+        "pending":   pending,
+        "skipped":   skipped,
+        "pnl":       round(pnl, 2),
+        "bankroll":  round(bankroll, 2),
+        "win_rate":  win_rate,
+        "brier":     round(brier, 4),
+        "best_trade": round(best, 2),
+        "progress":  total,
+        "target":    "infinite",
         "timestamp": datetime.now().isoformat(),
     }
 
 
 @app.get("/api/strategies")
 def get_strategies():
+    if USE_SUPABASE:
+        return _strategies_supabase()
+    return _strategies_sqlite()
+
+
+def _strategies_sqlite():
     conn = get_db()
     rows = conn.execute("""
         SELECT strategy,
@@ -95,8 +186,53 @@ def get_strategies():
     return result
 
 
+def _strategies_supabase():
+    trades = supa_query("trades", "strategy,outcome,pnl,brier_score,confianza,ev")
+    from collections import defaultdict
+    strats = defaultdict(lambda: {"total": 0, "won": 0, "lost": 0, "pnl": 0,
+                                   "brier_sum": 0, "brier_n": 0,
+                                   "conf_sum": 0, "ev_sum": 0})
+    for t in trades:
+        s = t.get("strategy", "unknown")
+        strats[s]["total"] += 1
+        if t.get("outcome") == "win":
+            strats[s]["won"] += 1
+        if t.get("outcome") == "loss":
+            strats[s]["lost"] += 1
+        if t.get("pnl") is not None:
+            strats[s]["pnl"] += t["pnl"]
+        if t.get("brier_score") and t["brier_score"] > 0:
+            strats[s]["brier_sum"] += t["brier_score"]
+            strats[s]["brier_n"] += 1
+        strats[s]["conf_sum"] += (t.get("confianza") or 0)
+        strats[s]["ev_sum"] += (t.get("ev") or 0)
+
+    result = []
+    for name, d in sorted(strats.items(), key=lambda x: -x[1]["total"]):
+        won = d["won"]
+        lost = d["lost"]
+        total = d["total"]
+        result.append({
+            "strategy": name,
+            "total":    total,
+            "won":      won,
+            "lost":     lost,
+            "win_rate": round(won / max(won + lost, 1) * 100, 1),
+            "brier":    round(d["brier_sum"] / max(d["brier_n"], 1), 4),
+            "pnl":      round(d["pnl"], 2),
+            "avg_conf": round(d["conf_sum"] / max(total, 1), 1),
+            "avg_ev":   round(d["ev_sum"] / max(total, 1), 4),
+        })
+    return result
+
+
 @app.get("/api/trades/recent")
 def get_recent_trades(limit: int = 50):
+    if USE_SUPABASE:
+        rows = supa_query("trades",
+                          "id,market_name,strategy,confianza,stake,ev,odds,outcome,pnl,created_at,league",
+                          {"order": "id.desc", "limit": str(limit)})
+        return rows
     conn = get_db()
     rows = conn.execute("""
         SELECT id, market_name, strategy, confianza, stake,
@@ -111,6 +247,22 @@ def get_recent_trades(limit: int = 50):
 
 @app.get("/api/trades/timeline")
 def get_timeline():
+    if USE_SUPABASE:
+        trades = supa_query("trades", "created_at,outcome,pnl")
+        from collections import defaultdict
+        hours = defaultdict(lambda: {"trades": 0, "won": 0, "pnl": 0})
+        for t in trades:
+            ca = t.get("created_at") or ""
+            if len(ca) >= 13:
+                h = ca[11:13] + ":00"
+            else:
+                continue
+            hours[h]["trades"] += 1
+            if t.get("outcome") == "win":
+                hours[h]["won"] += 1
+            hours[h]["pnl"] += (t.get("pnl") or 0)
+        return [{"hour": h, **d} for h, d in sorted(hours.items())]
+
     conn = get_db()
     rows = conn.execute("""
         SELECT
@@ -129,6 +281,10 @@ def get_timeline():
 
 @app.get("/api/bankroll/history")
 def get_bankroll_history():
+    if USE_SUPABASE:
+        rows = supa_query("bankroll", "id,balance,note,timestamp",
+                          {"order": "id.desc", "limit": "100"})
+        return list(reversed(rows))
     conn = get_db()
     rows = conn.execute("""
         SELECT id, balance, note, timestamp
@@ -142,6 +298,10 @@ def get_bankroll_history():
 
 @app.get("/api/patterns")
 def get_patterns():
+    if USE_SUPABASE:
+        return supa_query("patterns",
+                          "id,pattern_type,description,confidence,sample_size,action_taken,still_valid,created_at",
+                          {"still_valid": "eq.1", "order": "confidence.desc", "limit": "20"})
     conn = get_db()
     try:
         rows = conn.execute("""
@@ -159,6 +319,18 @@ def get_patterns():
         return []
 
 
+@app.get("/api/sync/status")
+def sync_status():
+    """Check Supabase sync status."""
+    return {
+        "mode": "supabase" if USE_SUPABASE else "sqlite",
+        "supabase_configured": bool(SUPABASE_URL and SUPABASE_KEY),
+        "db_path": DB_PATH if not USE_SUPABASE else None,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    return {"status": "ok", "mode": "supabase" if USE_SUPABASE else "sqlite",
+            "timestamp": datetime.now().isoformat()}
