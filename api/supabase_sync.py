@@ -113,14 +113,41 @@ def sync_all() -> dict:
     return results
 
 
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-    # Re-read env after loading
+def reload_config():
+    """Reload all config from environment after dotenv is loaded."""
+    global SUPABASE_URL, SUPABASE_KEY, DB_PATH, HEADERS
     SUPABASE_URL = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
     HEADERS["apikey"] = SUPABASE_KEY
     HEADERS["Authorization"] = f"Bearer {SUPABASE_KEY}"
+    # DB_PATH: prefer env var, then look relative to this file
+    env_db = os.getenv("DB_PATH", "")
+    if env_db and os.path.exists(env_db):
+        DB_PATH = env_db
+    else:
+        # Walk up from api/ -> polybot_dashboard/ -> worktree root -> polybot/trades.db
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        candidate = os.path.join(root, "polybot", "trades.db")
+        if os.path.exists(candidate):
+            DB_PATH = candidate
+        else:
+            DB_PATH = os.path.join(os.path.dirname(__file__), "..", "polybot", "trades.db")
+
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    # Find .env: try worktree root first (two levels up from api/)
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    env_path = os.path.join(root, ".env")
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+        print(f"Loaded .env from: {env_path}")
+    else:
+        load_dotenv()
+
+    reload_config()
+    print(f"DB_PATH: {DB_PATH} (exists: {os.path.exists(DB_PATH)})")
+    print(f"SUPABASE_URL: {SUPABASE_URL[:40]}..." if SUPABASE_URL else "SUPABASE_URL: NOT SET")
 
     if not SUPABASE_URL:
         print("ERROR: Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env")
