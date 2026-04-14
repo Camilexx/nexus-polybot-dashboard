@@ -134,6 +134,21 @@ def reload_config():
             DB_PATH = os.path.join(os.path.dirname(__file__), "..", "polybot", "trades.db")
 
 
+def sync_to_supabase(batch_size: int = 500) -> dict:
+    """
+    Alias público para sync_all().
+    Acepta batch_size para compatibilidad con sync_loop.py.
+    Lee DB_PATH desde os.getenv('DB_PATH') con fallback a 'polybot/trades.db'.
+    """
+    global DB_PATH
+    env_db = os.getenv("DB_PATH", "")
+    if env_db:
+        DB_PATH = env_db
+    elif not os.path.isabs(DB_PATH) and not os.path.exists(DB_PATH):
+        DB_PATH = "polybot/trades.db"
+    return sync_all()
+
+
 if __name__ == "__main__":
     from dotenv import load_dotenv
     # Find .env: try worktree root first (two levels up from api/)
