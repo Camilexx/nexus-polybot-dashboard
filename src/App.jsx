@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   AreaChart, Area, BarChart, Bar,
   PieChart, Pie, Cell,
@@ -8,8 +8,8 @@ import {
   Activity, TrendingUp, Target, Zap, DollarSign,
   RefreshCw, CheckCircle, XCircle, Clock, AlertCircle,
   Cpu, BarChart2, ArrowUpRight, Flame, Eye, Shield,
-  AlertTriangle, BookOpen, TrendingDown, Award, Filter,
-  ExternalLink, GitBranch, Database, ChevronRight,
+  AlertTriangle, BookOpen, Award, Filter,
+  ExternalLink, GitBranch, Database,
 } from "lucide-react";
 import {
   fetchSummary, fetchStrategies, fetchRecentTrades,
@@ -33,7 +33,6 @@ const STRAT_COLORS = {
   binary_arb: C.purple, general: "#4A4A5A",
   corners_1h: C.yellow, tarjetas: "#EC4899",
 };
-const STRAT_ICONS = { momentum: Flame, value_bet: Eye, negrisk_arb: Shield, binary_arb: Zap };
 
 const RISK_MAP = {
   NORMAL:       { color: C.green,  bg: "bg-[#00D4AA]/8",  border: "border-[#00D4AA]/20", label: "NORMAL",       icon: CheckCircle },
@@ -43,15 +42,15 @@ const RISK_MAP = {
 };
 
 /* ─── Utilities ──────────────────────────────────────── */
-function timeAgo(isoStr) {
-  if (!isoStr) return "—";
-  const diff = Date.now() - new Date(isoStr).getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1)  return "ahora";
-  if (m < 60) return `hace ${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `hace ${h}h`;
-  return `hace ${Math.floor(h / 24)}d`;
+function getRelativeTime(dateStr) {
+  if (!dateStr) return "—";
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1)  return "ahora";
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}h`;
+  return `${Math.floor(hrs / 24)}d`;
 }
 
 /* ─── useAsync hook ──────────────────────────────────── */
@@ -113,10 +112,7 @@ function Countdown({ interval = REFRESH }) {
 /* ─── Brier Score SVG Gauge ──────────────────────────── */
 function BrierGauge({ value = 0 }) {
   const CX = 100, CY = 100, R = 68;
-  const START = 135;   // degrees — lower-left (7:30 clock)
-  const SPAN  = 270;   // degrees — arc covers 270°, gap at bottom
-  const MAX   = 0.50;  // 0.5 brier = 100% gauge fill
-
+  const START = 135, SPAN = 270, MAX = 0.50;
   const norm = Math.min(Math.max(value / MAX, 0), 1);
 
   const polar = (deg) => {
@@ -125,21 +121,18 @@ function BrierGauge({ value = 0 }) {
   };
 
   const [sx, sy] = polar(START);
-  const [ex, ey] = polar(START + SPAN);   // = polar(45)
-
+  const [ex, ey] = polar(START + SPAN);
   const fillEnd   = START + SPAN * norm;
   const [fx, fy]  = polar(fillEnd);
   const fillLarge = (SPAN * norm) > 180 ? 1 : 0;
 
-  // Needle from center toward arc (a bit shorter than R)
   const NR  = 52;
   const nRad = (fillEnd * Math.PI) / 180;
   const nx  = +(CX + NR * Math.cos(nRad)).toFixed(2);
   const ny  = +(CY + NR * Math.sin(nRad)).toFixed(2);
 
-  // Threshold tick at 0.25 brier
   const tickDeg = START + SPAN * (0.25 / MAX);
-  const [ti1x, ti1y] = polar(tickDeg);   // outer
+  const [ti1x, ti1y] = polar(tickDeg);
   const ti2R = R - 14;
   const ti2x = +(CX + ti2R * Math.cos(tickDeg * Math.PI / 180)).toFixed(2);
   const ti2y = +(CY + ti2R * Math.sin(tickDeg * Math.PI / 180)).toFixed(2);
@@ -151,43 +144,276 @@ function BrierGauge({ value = 0 }) {
     <div className="flex flex-col items-center">
       <svg viewBox="0 22 200 150" fill="none" xmlns="http://www.w3.org/2000/svg"
         style={{ width: "100%", maxWidth: 148 }}>
-        {/* Track arc */}
         <path d={`M ${sx} ${sy} A ${R} ${R} 0 1 1 ${ex} ${ey}`}
           stroke="#1C1C2A" strokeWidth={7} strokeLinecap="round" />
-        {/* Filled arc */}
         {norm > 0.005 && (
           <path d={`M ${sx} ${sy} A ${R} ${R} 0 ${fillLarge} 1 ${fx} ${fy}`}
             stroke={color} strokeWidth={7} strokeLinecap="round"
             style={{ filter: `drop-shadow(0 0 5px ${color}70)`, transition: "all 1.2s cubic-bezier(0.4,0,0.2,1)" }} />
         )}
-        {/* Goal threshold tick at 0.25 */}
         <line x1={ti1x} y1={ti1y} x2={ti2x} y2={ti2y}
           stroke="#00D4AA" strokeWidth={1.5} opacity={0.45} />
-        {/* Needle */}
         <line x1={CX} y1={CY} x2={nx} y2={ny}
           stroke={color} strokeWidth={1.5} strokeLinecap="round"
           style={{ transition: "all 1.2s cubic-bezier(0.4,0,0.2,1)" }} />
-        {/* Hub outer */}
         <circle cx={CX} cy={CY} r={5} fill={color} opacity={0.25} />
-        {/* Hub inner */}
         <circle cx={CX} cy={CY} r={3} fill={color} />
         <circle cx={CX} cy={CY} r={1.2} fill="#050505" />
-        {/* Score */}
         <text x={CX} y={CY - 8} textAnchor="middle"
           fontFamily="'JetBrains Mono',monospace" fontSize={19} fontWeight={700} fill={color}>
           {value.toFixed(4)}
         </text>
-        {/* Label */}
         <text x={CX} y={CY + 10} textAnchor="middle"
           fontFamily="'DM Sans',sans-serif" fontSize={7} fill="#6B6A7A" letterSpacing="0.08em">
           {label}
         </text>
-        {/* Goal label */}
         <text x={CX} y={CY + 20} textAnchor="middle"
           fontFamily="'DM Sans',sans-serif" fontSize={6} fill="#3A3A4A" letterSpacing="0.06em">
           META &lt; 0.25
         </text>
       </svg>
+    </div>
+  );
+}
+
+/* ─── StatBox (used in StrategyCard) ────────────────── */
+function StatBox({ label, value, color, mono = false }) {
+  const textColor = color === "green" ? "#00D4AA"
+    : color === "red"    ? "#FF4455"
+    : color === "orange" ? "#E8650A"
+    : "#C0C0D0";
+  return (
+    <div className="stat-box">
+      <span className="stat-box-value"
+        style={{ color: textColor, fontFamily: mono ? "'JetBrains Mono',monospace" : undefined }}>
+        {value}
+      </span>
+      <span className="stat-box-label">{label}</span>
+    </div>
+  );
+}
+
+/* ─── StatusBadge ────────────────────────────────────── */
+function StatusBadge({ status }) {
+  const color = status === "DOMINANTE" ? "#00D4AA"
+    : status === "CALIBRANDO" ? "#E8650A"
+    : "#3A3A4A";
+  return (
+    <span className="font-mono text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border"
+      style={{ color, background: `${color}12`, borderColor: `${color}28` }}>
+      {status}
+    </span>
+  );
+}
+
+/* ─── Strategy Card ──────────────────────────────────── */
+function StrategyCard({ strategy, rank }) {
+  const isDominant    = strategy.resolved > 0 && strategy.wr > 60 && strategy.pnl > 0 && strategy.resolved >= 10;
+  const isCalibrating = strategy.resolved > 0 && (!isDominant);
+  const statusLabel   = isDominant ? "DOMINANTE" : isCalibrating ? "CALIBRANDO" : "SIN DATOS";
+
+  return (
+    <div className={`strategy-card ${isDominant ? "dominant" : isCalibrating ? "calibrating" : "inactive"}`}>
+
+      {/* Header */}
+      <div className="strat-header">
+        <div className="strat-name-group">
+          <span className="strat-rank">#{rank}</span>
+          <span className="strat-name" style={{ color: STRAT_COLORS[strategy.raw] || C.dim }}>
+            {strategy.name}
+          </span>
+        </div>
+        <StatusBadge status={statusLabel} />
+      </div>
+
+      {/* WR — main metric */}
+      <div className="strat-wr-section">
+        <div className="strat-wr-number"
+          style={{ color: strategy.wr >= 65 ? "#00D4AA" : strategy.wr >= 45 ? "#E8650A" : "#FF4455" }}>
+          {strategy.resolved > 0 ? `${strategy.wr.toFixed(1)}%` : "—"}
+        </div>
+        <div className="strat-wr-bar">
+          <div className="strat-wr-fill"
+            style={{
+              width: `${Math.min(strategy.wr, 100)}%`,
+              background: strategy.wr >= 65 ? "#00D4AA" : strategy.wr >= 45 ? "#E8650A" : "#FF4455",
+            }} />
+        </div>
+        <span className="strat-wr-label">WIN RATE</span>
+      </div>
+
+      {/* Stats grid 2×3 */}
+      <div className="strat-stats">
+        <StatBox label="TRADES"    value={strategy.total.toLocaleString()} mono />
+        <StatBox label="RESUELTOS" value={strategy.resolved} mono />
+        <StatBox label="PNL"       value={`${strategy.pnl >= 0 ? "+" : ""}$${strategy.pnl.toFixed(2)}`}
+          color={strategy.pnl >= 0 ? "green" : "red"} mono />
+        <StatBox label="AVG EV"    value={strategy.avgEv ? strategy.avgEv.toFixed(4) : "—"} mono />
+        <StatBox label="BRIER"     value={strategy.brier > 0 ? strategy.brier.toFixed(4) : "—"}
+          color={strategy.brier < 0.2 ? "green" : strategy.brier < 0.35 ? "orange" : "red"} mono />
+        <StatBox label="CONFIANZA" value={strategy.avgConf ? `${strategy.avgConf.toFixed(0)}%` : "—"} mono />
+      </div>
+
+      {/* Insight */}
+      {isDominant && (
+        <div className="strat-insight dominant-insight">
+          ⚡ Edge confirmado — usar para live trading
+        </div>
+      )}
+      {strategy.resolved === 0 && (
+        <div className="strat-insight inactive-insight">
+          ⏳ Sin resoluciones reales — no activar con capital
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Strategy Section ───────────────────────────────── */
+function StrategyTable({ strats }) {
+  const strategies = (strats || []).map(s => ({
+    raw:      s.strategy,
+    name:     (s.strategy || "").replace(/_/g, " ").toUpperCase(),
+    total:    s.total    || 0,
+    resolved: s.resolved || 0,
+    wr:       s.win_rate || 0,
+    pnl:      s.pnl      || 0,
+    avgEv:    s.avg_ev   || 0,
+    brier:    s.brier    || 0,
+    avgConf:  s.avg_conf || 0,
+  }));
+
+  return (
+    <div className="strategy-section">
+      <div className="section-header">
+        <div>
+          <span className="section-title">STRATEGY PERFORMANCE</span>
+          <span className="section-meta">Análisis cuantitativo en tiempo real</span>
+        </div>
+        <span className="text-[9px] font-mono text-[#3A3A5A]">{strategies.length} estrategias</span>
+      </div>
+      <div className="strategy-grid">
+        {strategies.map((s, i) => <StrategyCard key={i} strategy={s} rank={i + 1} />)}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Trade Row (v4.1) ───────────────────────────────── */
+function TradeRow({ trade, isNew = false }) {
+  const outcomeConfig = {
+    win:     { icon: "✓", color: "#00D4AA", bg: "rgba(0,212,170,0.12)",  label: "WIN"  },
+    loss:    { icon: "✗", color: "#FF4455", bg: "rgba(255,68,85,0.12)",   label: "LOSS" },
+    pending: { icon: "◐", color: "#E8650A", bg: "rgba(232,101,10,0.10)",  label: "LIVE" },
+    skipped: { icon: "—", color: "#333",    bg: "transparent",            label: "SKIP" },
+    skip:    { icon: "—", color: "#333",    bg: "transparent",            label: "SKIP" },
+  };
+  const oc         = outcomeConfig[trade.outcome] || outcomeConfig.skipped;
+  const stratColor = STRAT_COLORS[trade.strategy] || C.dim;
+
+  return (
+    <div className={`trade-row ${isNew ? "trade-row-new" : ""} ${trade.outcome || "skip"}`}>
+      {/* Outcome dot */}
+      <div className="trade-outcome-dot" style={{ background: oc.bg, color: oc.color }}>
+        <span className={trade.outcome === "pending" ? "pulse-icon" : ""}>{oc.icon}</span>
+      </div>
+
+      {/* Main info */}
+      <div className="trade-main">
+        <div className="trade-strat-badge" style={{ color: stratColor }}>
+          {trade.strategy?.replace(/_/g, " ").toUpperCase()}
+        </div>
+        <div className="trade-market">{trade.market_name}</div>
+        <div className="trade-meta">
+          <span className="trade-conf">{trade.confianza?.toFixed(0)}% conf</span>
+          {trade.ev != null && (
+            <span className="trade-ev" style={{ color: trade.ev > 0 ? "#00D4AA" : "#FF4455" }}>
+              EV {trade.ev?.toFixed(3)}
+            </span>
+          )}
+          <span className="trade-time">{getRelativeTime(trade.created_at)}</span>
+        </div>
+      </div>
+
+      {/* Value */}
+      <div className="trade-value">
+        {trade.outcome === "win" && (
+          <span className="trade-pnl win">+${trade.pnl?.toFixed(2)}</span>
+        )}
+        {trade.outcome === "loss" && (
+          <span className="trade-pnl loss">-${Math.abs(trade.pnl || trade.stake || 0).toFixed(2)}</span>
+        )}
+        {trade.outcome === "pending" && (
+          <span className="trade-stake">${trade.stake?.toFixed(2)}</span>
+        )}
+        {(trade.outcome === "skipped" || trade.outcome === "skip") && (
+          <span className="trade-skip">SKIP</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Live Feed ──────────────────────────────────────── */
+function LiveFeed({ trades }) {
+  const [filter, setFilter] = useState("ALL");
+  const FILTERS = ["ALL", "WIN", "LOSS", "PENDING", "NEGRISK"];
+
+  // Track new IDs across renders
+  const seenIds = useRef(new Set());
+  useEffect(() => {
+    if (trades) trades.forEach(t => seenIds.current.add(t.id));
+  }, []); // eslint-disable-line
+
+  const isNew = (t) => t.id && !seenIds.current.has(t.id);
+
+  useEffect(() => {
+    if (trades) trades.forEach(t => seenIds.current.add(t.id));
+  }, [trades]);
+
+  const filtered = (trades || []).filter(t => {
+    if (filter === "ALL")     return true;
+    if (filter === "WIN")     return t.outcome === "win";
+    if (filter === "LOSS")    return t.outcome === "loss";
+    if (filter === "PENDING") return t.outcome === "pending";
+    if (filter === "NEGRISK") return t.strategy === "negrisk_arb";
+    return true;
+  }).slice(0, 40);
+
+  return (
+    <div className="card flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3.5 border-b border-[rgba(255,255,255,0.05)]">
+        <div className="flex items-center gap-2">
+          <Activity size={13} className="text-[#E8650A]" />
+          <p className="text-[11px] font-bold uppercase tracking-[0.12em]">Live Feed</p>
+          <div className="flex items-center gap-1.5 ml-1 px-2 py-0.5 rounded-full bg-[#00D4AA]/6 border border-[#00D4AA]/12">
+            <div className="live-dot" style={{ width: 5, height: 5 }} />
+            <span className="text-[8px] font-bold text-[#00D4AA] uppercase tracking-wider">Live</span>
+          </div>
+        </div>
+        <span className="text-[9px] font-mono text-[#3A3A5A]">{(trades || []).length} trades</span>
+      </div>
+
+      {/* Filter tabs */}
+      <div className="trade-filters">
+        {FILTERS.map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={`filter-btn ${filter === f ? "active" : ""}`}>
+            {f}
+          </button>
+        ))}
+      </div>
+
+      {/* Rows */}
+      <div className="flex-1 overflow-y-auto" style={{ maxHeight: 480 }}>
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-32 gap-2 text-[#3A3A5A]">
+            <Clock size={22} strokeWidth={1.5} />
+            <p className="text-[11px]">Sin trades para este filtro</p>
+          </div>
+        ) : filtered.map((t, i) => <TradeRow key={t.id || i} trade={t} isNew={isNew(t)} />)}
+      </div>
     </div>
   );
 }
@@ -202,7 +428,7 @@ const ACCENT = {
   yellow: { text: "text-[#F59E0B]", bg: "bg-[#F59E0B]/8",  border: "border-[#F59E0B]/15" },
 };
 
-function StatCard({ icon: Icon, label, value, sub, color = "orange", prefix = "", suffix = "", dec = 0, pulse = false }) {
+function HeroCard({ icon: Icon, label, value, sub, color = "orange", prefix = "", suffix = "", dec = 0, pulse = false }) {
   const a = ACCENT[color] || ACCENT.orange;
   return (
     <div className={`card p-5 flex flex-col gap-3 ${pulse ? "glow-pulse" : ""}`}>
@@ -220,7 +446,7 @@ function StatCard({ icon: Icon, label, value, sub, color = "orange", prefix = ""
   );
 }
 
-/* ─── Live criteria progress ────────────────────────── */
+/* ─── Live Criteria Panel ────────────────────────────── */
 function LiveCriteriaPanel({ s }) {
   const resolved = (s?.won || 0) + (s?.lost || 0);
   const wr       = s?.win_rate || 0;
@@ -228,10 +454,10 @@ function LiveCriteriaPanel({ s }) {
   const brier    = s?.brier || 1;
 
   const criteria = [
-    { label: "Win Rate > 65%",     ok: wr >= LIVE_TARGET.wr,          current: `${wr.toFixed(1)}%`,  target: "65%" },
-    { label: "PnL positivo",       ok: pnl > 0,                        current: `$${pnl.toFixed(2)}`, target: "$0" },
-    { label: "Resueltos ≥ 150",    ok: resolved >= LIVE_TARGET.resolved, current: `${resolved}`,       target: "150" },
-    { label: "Brier Score < 0.25", ok: brier < LIVE_TARGET.brier,      current: brier.toFixed(4),     target: "0.25" },
+    { label: "Win Rate > 65%",     ok: wr >= LIVE_TARGET.wr,              current: `${wr.toFixed(1)}%`,  target: "65%" },
+    { label: "PnL positivo",       ok: pnl > 0,                           current: `$${pnl.toFixed(2)}`, target: "$0" },
+    { label: "Resueltos ≥ 150",    ok: resolved >= LIVE_TARGET.resolved,  current: `${resolved}`,        target: "150" },
+    { label: "Brier Score < 0.25", ok: brier < LIVE_TARGET.brier,         current: brier.toFixed(4),     target: "0.25" },
   ];
 
   const passed = criteria.filter(c => c.ok).length;
@@ -250,8 +476,6 @@ function LiveCriteriaPanel({ s }) {
           {passed}/{criteria.length} criterios
         </div>
       </div>
-
-      {/* Master progress bar */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[10px] text-[#6B6A7A] font-medium">Progreso general</span>
@@ -262,8 +486,6 @@ function LiveCriteriaPanel({ s }) {
             style={{ width: `${pct}%`, background: allOk ? C.green : C.orange }} />
         </div>
       </div>
-
-      {/* Criteria list — checkmarks animate on mount/change */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         {criteria.map((c, i) => (
           <div key={i} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-colors
@@ -280,7 +502,6 @@ function LiveCriteriaPanel({ s }) {
           </div>
         ))}
       </div>
-
       {allOk && (
         <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-[#00D4AA]/10 border border-[#00D4AA]/25">
           <Award size={14} className="text-[#00D4AA]" />
@@ -291,7 +512,7 @@ function LiveCriteriaPanel({ s }) {
   );
 }
 
-/* ─── Risk Status Panel ─────────────────────────────── */
+/* ─── Risk Panel ─────────────────────────────────────── */
 function RiskPanel({ risk }) {
   const r  = risk || { status: "NORMAL", bankroll: 10, drawdown: 0, lossStreak: 0 };
   const rm = RISK_MAP[r.status] || RISK_MAP.NORMAL;
@@ -303,7 +524,6 @@ function RiskPanel({ risk }) {
         <Shield size={14} style={{ color: rm.color }} />
         <span className="text-[11px] font-bold uppercase tracking-[0.14em]">Risk Manager</span>
       </div>
-
       <div className={`flex items-center gap-3 px-3 py-2.5 rounded-xl ${rm.bg} border ${rm.border}`}>
         <Icon size={18} style={{ color: rm.color }} strokeWidth={2} />
         <div>
@@ -311,13 +531,12 @@ function RiskPanel({ risk }) {
           <p className="text-[10px] text-[#6B6A7A] font-medium">Modo actual de operación</p>
         </div>
       </div>
-
       <div className="grid grid-cols-2 gap-2">
         {[
-          { label: "Bankroll",    val: `$${(r.bankroll || 0).toFixed(2)}`,            color: C.green },
+          { label: "Bankroll",    val: `$${(r.bankroll || 0).toFixed(2)}`,               color: C.green },
           { label: "Max ever",    val: `$${(r.maxEver || r.bankroll || 10).toFixed(2)}`, color: C.blue },
-          { label: "Drawdown",    val: `${((r.drawdown || 0) * 100).toFixed(1)}%`,   color: r.drawdown > 0.2 ? C.red : C.dim },
-          { label: "Loss streak", val: r.lossStreak || 0,                              color: (r.lossStreak || 0) >= 3 ? C.red : C.dim },
+          { label: "Drawdown",    val: `${((r.drawdown || 0) * 100).toFixed(1)}%`,       color: r.drawdown > 0.2 ? C.red : C.dim },
+          { label: "Loss streak", val: r.lossStreak || 0,                                color: (r.lossStreak || 0) >= 3 ? C.red : C.dim },
         ].map(m => (
           <div key={m.label} className="bg-[#080808] rounded-lg p-2.5 text-center border border-[rgba(255,255,255,0.04)]">
             <p className="text-[14px] font-bold font-mono" style={{ color: m.color }}>{m.val}</p>
@@ -325,8 +544,6 @@ function RiskPanel({ risk }) {
           </div>
         ))}
       </div>
-
-      {/* Drawdown bar */}
       <div>
         <div className="flex justify-between text-[9px] text-[#6B6A7A] mb-1">
           <span>Drawdown desde máximo</span>
@@ -342,238 +559,89 @@ function RiskPanel({ risk }) {
   );
 }
 
-/* ─── Patterns / Self-improvement ───────────────────── */
-function SelfImprovementPanel({ patterns }) {
+/* ─── Self-Improvement Log (v4.1) ────────────────────── */
+function SelfImprovementLog({ patterns }) {
+  const typeConfig = {
+    CALIBRATION_UNDERCONFIDENT: {
+      icon: "📈", color: "#00D4AA",
+      label: "SUBESTIMA",   short: "Subiendo stakes en rango de confianza",
+    },
+    CALIBRATION_OVERCONFIDENT: {
+      icon: "📉", color: "#FF4455",
+      label: "SOBREESTIMA", short: "Bajando stakes en rango de confianza",
+    },
+    STRATEGY_FLAGGED: {
+      icon: "🚩", color: "#E8650A",
+      label: "ESTRATEGIA",  short: "Revisión requerida",
+    },
+    PATTERN_FOUND: {
+      icon: "🔍", color: "#8B5CF6",
+      label: "PATRÓN",      short: "Nuevo patrón detectado",
+    },
+  };
+
   const pts = patterns || [];
+
   return (
-    <div className="card p-5 space-y-4">
-      <div className="flex items-center gap-2">
-        <BookOpen size={14} className="text-[#8B5CF6]" />
-        <span className="text-[11px] font-bold uppercase tracking-[0.14em]">Self-Improvement Log</span>
-        <span className="ml-auto text-[9px] font-bold text-[#6B6A7A] bg-[#1A1A26] px-2 py-0.5 rounded-full border border-[rgba(255,255,255,0.05)]">
-          {pts.length} patrones
-        </span>
+    <div className="improvement-panel">
+      <div className="section-header">
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+            <span className="section-title">SELF-IMPROVEMENT</span>
+            <span className="improvement-badge">{pts.length} ajustes</span>
+          </div>
+          <span className="section-meta">Motor de autoaprendizaje</span>
+        </div>
       </div>
+
       {pts.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-6 gap-2 text-[#6B6A7A]">
-          <BookOpen size={24} strokeWidth={1.5} />
-          <p className="text-[11px] font-medium">Sin patrones detectados aún</p>
-          <p className="text-[10px]">Ciclo cada 500 trades resueltos</p>
+        <div className="flex flex-col items-center justify-center py-8 gap-2">
+          <div className="text-2xl">🧠</div>
+          <div className="text-[12px] text-[#555]">Analizando patrones...</div>
+          <div className="text-[10px] text-[#333] font-mono">El motor mejora cada 500 trades resueltos</div>
         </div>
       ) : (
-        <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
-          {pts.slice(0, 8).map((p, i) => (
-            <div key={i} className="px-3 py-2.5 rounded-lg bg-[#080808] border border-[rgba(255,255,255,0.05)] space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
-                  style={{ color: C.purple, background: `${C.purple}18` }}>
-                  {p.pattern_type || "pattern"}
-                </span>
-                {p.still_valid === false && (
-                  <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
-                    style={{ color: C.red, background: `${C.red}18` }}>obsoleto</span>
-                )}
-                <span className="ml-auto text-[9px] text-[#6B6A7A] font-mono">n={p.sample_size || "?"}</span>
+        <div className="improvement-list">
+          {pts.slice(0, 8).map((p, i) => {
+            const cfg = typeConfig[p.pattern_type] || typeConfig.PATTERN_FOUND;
+            return (
+              <div key={i} className="improvement-item" style={{ "--accent": cfg.color }}>
+                <div className="improvement-icon">{cfg.icon}</div>
+                <div className="improvement-body">
+                  <div className="improvement-type" style={{ color: cfg.color }}>{cfg.label}</div>
+                  <div className="improvement-desc">{p.description || cfg.short}</div>
+                  <div className="improvement-meta">
+                    <span className="improvement-league">{p.league || "Global"}</span>
+                    {p.confidence && (
+                      <span className="improvement-conf">
+                        {(p.confidence * 100).toFixed(0)}% conf
+                      </span>
+                    )}
+                    <span className="improvement-sample">n={p.sample_size || "?"}</span>
+                  </div>
+                </div>
+                <div className="improvement-action">
+                  <span className="action-badge"
+                    style={{ background: `${cfg.color}15`, color: cfg.color, border: `1px solid ${cfg.color}30` }}>
+                    {p.action_taken || "APLICADO"}
+                  </span>
+                </div>
               </div>
-              <p className="text-[10px] text-[#B0B0C0] leading-relaxed">{p.description}</p>
-              {p.action_taken && (
-                <p className="text-[10px] text-[#8B5CF6] font-medium">→ {p.action_taken}</p>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
-    </div>
-  );
-}
 
-/* ─── Outcome badge ──────────────────────────────────── */
-function OutcomeBadge({ outcome }) {
-  const map = {
-    win:     { icon: <CheckCircle size={12} strokeWidth={2.5} />, cls: "text-[#00D4AA] bg-[#00D4AA]/8" },
-    loss:    { icon: <XCircle     size={12} strokeWidth={2.5} />, cls: "text-[#FF4455] bg-[#FF4455]/8" },
-    pending: { icon: <Clock       size={12} strokeWidth={2.5} />, cls: "text-[#E8650A] bg-[#E8650A]/8 animate-pulse" },
-    skipped: { icon: <AlertCircle size={12} strokeWidth={2.5} />, cls: "text-[#6B6A7A] bg-[#6B6A7A]/8" },
-    skip:    { icon: <AlertCircle size={12} strokeWidth={2.5} />, cls: "text-[#6B6A7A] bg-[#6B6A7A]/8" },
-  };
-  const { icon, cls } = map[outcome] || map.skip;
-  return <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md ${cls}`}>{icon}</span>;
-}
-
-/* ─── Trade row ──────────────────────────────────────── */
-function TradeRow({ trade }) {
-  const outcome   = trade.outcome || "skip";
-  const pnlColor  = (trade.pnl || 0) >= 0 ? "text-[#00D4AA]" : "text-[#FF4455]";
-  const stratColor = STRAT_COLORS[trade.strategy] || C.dim;
-  const ago       = timeAgo(trade.created_at);
-  return (
-    <div className="grid grid-cols-[24px_1fr_auto] items-center gap-2.5 px-3 py-2 rounded-lg
-      hover:bg-[#E8650A]/[0.04] transition-colors border-b border-[rgba(255,255,255,0.04)] last:border-0">
-      <OutcomeBadge outcome={outcome} />
-      <div className="min-w-0">
-        <p className="text-[11px] font-medium text-[#D0D0E0] truncate leading-snug">{trade.market_name}</p>
-        <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
-            style={{ color: stratColor, background: `${stratColor}18` }}>
-            {trade.strategy?.replace(/_/g, " ")}
-          </span>
-          <span className="text-[9px] text-[#6B6A7A] font-mono">{trade.confianza?.toFixed(1)}%</span>
-          {trade.ev != null && (
-            <span className="text-[9px] text-[#8B5CF6] font-mono">EV {trade.ev?.toFixed(3)}</span>
-          )}
-          <span className="text-[9px] text-[#3A3A5A] font-mono ml-auto">{ago}</span>
+      <div className="improvement-footer">
+        <div className="motor-status">
+          <div className="live-dot" style={{ width: 5, height: 5, background: "#8B5CF6",
+            animation: "dblRing 2.4s ease-out infinite",
+            boxShadow: "none" }} />
+          <span>Motor activo</span>
         </div>
-      </div>
-      <div className="text-right shrink-0">
-        {trade.pnl != null && outcome !== "pending" && outcome !== "skip" && outcome !== "skipped" ? (
-          <span className={`text-[11px] font-bold font-mono ${pnlColor}`}>
-            {(trade.pnl || 0) >= 0 ? "+" : ""}{trade.pnl?.toFixed(2)}
-          </span>
-        ) : (
-          <span className="text-[10px] font-mono text-[#6B6A7A]">${trade.stake?.toFixed(2)}</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ─── Strategy table ─────────────────────────────────── */
-function StrategyTable({ strats }) {
-  const maxPnl = Math.max(...(strats || []).map(s => Math.abs(s.pnl)), 1);
-
-  const badge = (s) => {
-    if (s.resolved === 0)                               return { label: "INACTIVO",   color: C.dim };
-    if (s.pnl > 0 && s.win_rate >= 60 && s.resolved >= 10) return { label: "DOMINANTE",  color: C.green };
-    if (s.resolved >= 5)                                return { label: "CALIBRANDO", color: C.orange };
-    return                                                     { label: "POCOS DATOS", color: C.yellow };
-  };
-
-  return (
-    <div className="card overflow-hidden">
-      <div className="flex items-center gap-2.5 px-5 py-4 border-b border-[rgba(255,255,255,0.05)]">
-        <BarChart2 size={14} className="text-[#E8650A]" />
-        <p className="text-[11px] font-bold uppercase tracking-[0.14em]">Strategy Performance</p>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-[11px]">
-          <thead>
-            <tr className="border-b border-[rgba(255,255,255,0.05)]">
-              {["Estrategia","Trades","Resueltos","WR%","PnL","Avg EV","Brier","Estado"].map(h => (
-                <th key={h} className="px-4 py-3 text-left text-[9px] font-bold text-[#6B6A7A] uppercase tracking-[0.12em] whitespace-nowrap">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {(strats || []).map((s, i) => {
-              const wr    = s.win_rate || 0;
-              const wrCol = wr >= 60 ? C.green : wr >= 45 ? C.orange : wr > 0 ? C.red : C.dim;
-              const b     = badge(s);
-              const color = STRAT_COLORS[s.strategy] || C.dim;
-              const Icon  = STRAT_ICONS[s.strategy] || Zap;
-              return (
-                <tr key={i}
-                  className="border-b border-[rgba(255,255,255,0.04)] last:border-0 hover:bg-[#E8650A]/[0.04] transition-colors cursor-default">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
-                        style={{ background: `${color}14` }}>
-                        <Icon size={11} style={{ color }} strokeWidth={2.5} />
-                      </div>
-                      <span className="font-bold uppercase tracking-wide" style={{ color }}>
-                        {s.strategy?.replace(/_/g, " ")}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 font-mono text-[#C0C0D0]">{s.total.toLocaleString()}</td>
-                  <td className="px-4 py-3 font-mono text-[#C0C0D0]">{s.resolved}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold font-mono" style={{ color: wrCol }}>{wr.toFixed(1)}%</span>
-                      <div className="w-12 h-1 bg-[#1A1A26] rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${wr}%`, background: wrCol }} />
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className={`font-bold font-mono ${s.pnl >= 0 ? "text-[#00D4AA]" : "text-[#FF4455]"}`}>
-                        {s.pnl >= 0 ? "+" : ""}{s.pnl.toFixed(2)}
-                      </span>
-                      <div className="w-10 h-1 bg-[#1A1A26] rounded-full overflow-hidden">
-                        <div className="h-full rounded-full"
-                          style={{ width: `${Math.abs(s.pnl) / maxPnl * 100}%`,
-                            background: s.pnl >= 0 ? C.green : C.red }} />
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 font-mono text-[#8B5CF6]">{s.avg_ev?.toFixed(4)}</td>
-                  <td className="px-4 py-3 font-mono text-[#3B82F6]">{s.brier?.toFixed(4) || "—"}</td>
-                  <td className="px-4 py-3">
-                    <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border"
-                      style={{ color: b.color, background: `${b.color}12`, borderColor: `${b.color}25` }}>
-                      {b.label}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Live feed with filter tabs ─────────────────────── */
-function LiveFeed({ trades }) {
-  const [filter, setFilter] = useState("ALL");
-  const FILTERS = ["ALL", "WIN", "LOSS", "PENDING", "NEGRISK"];
-
-  const filtered = (trades || []).filter(t => {
-    if (filter === "ALL")     return true;
-    if (filter === "WIN")     return t.outcome === "win";
-    if (filter === "LOSS")    return t.outcome === "loss";
-    if (filter === "PENDING") return t.outcome === "pending";
-    if (filter === "NEGRISK") return t.strategy === "negrisk_arb";
-    return true;
-  }).slice(0, 40);
-
-  return (
-    <div className="card flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3.5 border-b border-[rgba(255,255,255,0.05)]">
-        <div className="flex items-center gap-2">
-          <Activity size={13} className="text-[#E8650A]" />
-          <p className="text-[11px] font-bold uppercase tracking-[0.12em]">Live Feed</p>
-          <div className="flex items-center gap-1.5 ml-1 px-2 py-0.5 rounded-full bg-[#00D4AA]/6 border border-[#00D4AA]/12">
-            <div className="live-dot" style={{ width: 5, height: 5 }} />
-            <span className="text-[8px] font-bold text-[#00D4AA] uppercase tracking-wider">Live</span>
-          </div>
+        <div className="motor-stat">
+          Ciclo: <strong>500 trades</strong>
         </div>
-        <Filter size={11} className="text-[#6B6A7A]" />
-      </div>
-
-      {/* Filter tabs */}
-      <div className="flex items-center gap-1 px-4 py-2 border-b border-[rgba(255,255,255,0.04)]">
-        {FILTERS.map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            className={`text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded-md transition-all
-              ${filter === f
-                ? "bg-[#E8650A]/15 text-[#E8650A] border border-[#E8650A]/25"
-                : "text-[#6B6A7A] hover:text-[#9A9AAA] border border-transparent"}`}>
-            {f}
-          </button>
-        ))}
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-2 py-1" style={{ maxHeight: 480 }}>
-        {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 gap-2 text-[#6B6A7A]">
-            <Clock size={24} strokeWidth={1.5} />
-            <p className="text-[11px] font-medium">Sin trades para este filtro</p>
-          </div>
-        ) : filtered.map((t, i) => <TradeRow key={t.id || i} trade={t} />)}
       </div>
     </div>
   );
@@ -595,7 +663,7 @@ function ChartTip({ active, payload, label }) {
   );
 }
 
-/* ─── Unconfigured state ─────────────────────────────── */
+/* ─── Unconfigured ───────────────────────────────────── */
 function Unconfigured() {
   return (
     <div className="min-h-screen flex items-center justify-center p-6" style={{ background: C.bg }}>
@@ -613,7 +681,7 @@ function Unconfigured() {
 }
 
 /* ══════════════════════════════════════════════════════
-   MAIN APP — v4.0 Bloomberg-style Quantitative Terminal
+   MAIN APP — v4.1
    ══════════════════════════════════════════════════════ */
 export default function App() {
   const { data: s,      ts, refetch, error } = useAsync(fetchSummary);
@@ -624,7 +692,6 @@ export default function App() {
   const { data: patterns }                   = useAsync(fetchPatterns);
   const { data: risk }                       = useAsync(fetchRiskStatus);
 
-  // Refresh button spin
   const [spinKey, setSpinKey] = useState(0);
   const handleRefresh = () => { setSpinKey(k => k + 1); refetch(); };
 
@@ -653,11 +720,10 @@ export default function App() {
               <div className="live-dot" />
               <span className="text-[9px] font-bold text-[#00D4AA] uppercase tracking-[0.15em]">Paper Mode</span>
             </div>
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.06)]">
-              <span className="text-[9px] font-semibold text-[#6B6A7A] uppercase tracking-wider">v4.0</span>
+            <div className="hidden sm:flex items-center px-2.5 py-1 rounded-full bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.06)]">
+              <span className="text-[9px] font-semibold text-[#6B6A7A] uppercase tracking-wider">v4.1</span>
             </div>
           </div>
-
           <div className="flex items-center gap-3">
             {error && (
               <span className="text-[9px] font-semibold text-[#FF4455] bg-[#FF4455]/8 px-2 py-1 rounded-lg border border-[#FF4455]/15">
@@ -682,10 +748,10 @@ export default function App() {
 
       <main className="max-w-[1600px] mx-auto px-6 py-5 space-y-4">
 
-        {/* ══ HERO ROW — 5 métricas críticas ══ */}
+        {/* ══ HERO ROW ══ */}
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 animate-fade-up">
 
-          {/* Bankroll — large Barlow Condensed display */}
+          {/* Bankroll — 64px Barlow Condensed */}
           <div className="card p-4 xl:col-span-1 flex flex-col gap-2 glow-orange">
             <div className="flex items-center justify-between">
               <span className="text-[9px] font-bold text-[#6B6A7A] uppercase tracking-[0.14em]">Bankroll</span>
@@ -693,8 +759,7 @@ export default function App() {
                 <DollarSign size={11} className="text-[#E8650A]" strokeWidth={2.5} />
               </div>
             </div>
-            <p className="font-display leading-none tracking-tight text-[#E8650A]"
-              style={{ fontSize: 64 }}>
+            <p className="font-display leading-none tracking-tight text-[#E8650A]" style={{ fontSize: 64 }}>
               <Counter value={s?.bankroll || 10} prefix="$" dec={2} />
             </p>
             <p className="text-[10px] text-[#6B6A7A]">desde $10.00 inicial</p>
@@ -727,11 +792,12 @@ export default function App() {
               <Counter value={s?.win_rate || 0} suffix="%" dec={1} />
             </p>
             <div className="h-1 bg-[#1A1A26] rounded-full overflow-hidden">
-              <div className="h-full rounded-full progress-bar" style={{ width: `${s?.win_rate || 0}%`, background: C.blue }} />
+              <div className="h-full rounded-full progress-bar"
+                style={{ width: `${s?.win_rate || 0}%`, background: C.blue }} />
             </div>
           </div>
 
-          {/* Trades resolved */}
+          {/* Resueltos */}
           <div className="card p-4 flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <span className="text-[9px] font-bold text-[#6B6A7A] uppercase tracking-[0.14em]">Resueltos</span>
@@ -745,7 +811,7 @@ export default function App() {
             <p className="text-[10px] text-[#6B6A7A]">{total.toLocaleString()} total registrados</p>
           </div>
 
-          {/* Brier Score — SVG gauge */}
+          {/* Brier gauge */}
           <div className="card p-4 flex flex-col gap-1.5">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[9px] font-bold text-[#6B6A7A] uppercase tracking-[0.14em]">Brier Score</span>
@@ -757,17 +823,14 @@ export default function App() {
           </div>
         </div>
 
-        {/* ══ CRITERIA + RISK ROW ══ */}
+        {/* ══ CRITERIA + RISK ══ */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2">
-            <LiveCriteriaPanel s={s} />
-          </div>
+          <div className="lg:col-span-2"><LiveCriteriaPanel s={s} /></div>
           <RiskPanel risk={risk} />
         </div>
 
-        {/* ══ CHARTS ROW ══ */}
+        {/* ══ CHARTS ══ */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Bankroll evolution */}
           <div className="card p-5 lg:col-span-2">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
@@ -782,7 +845,7 @@ export default function App() {
               <AreaChart data={bankroll || []} margin={{ top: 4, right: 4, bottom: 0, left: -12 }}>
                 <defs>
                   <linearGradient id="gB" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"   stopColor="#00D4AA" stopOpacity={0.30} />
+                    <stop offset="0%"   stopColor="#00D4AA" stopOpacity={0.28} />
                     <stop offset="100%" stopColor="#00D4AA" stopOpacity={0} />
                   </linearGradient>
                 </defs>
@@ -797,7 +860,6 @@ export default function App() {
             </ResponsiveContainer>
           </div>
 
-          {/* Strategy donut */}
           <div className="card p-5">
             <div className="flex items-center gap-2 mb-4">
               <Zap size={14} className="text-[#8B5CF6]" />
@@ -807,9 +869,7 @@ export default function App() {
               <PieChart>
                 <Pie data={strats || []} dataKey="total" nameKey="strategy"
                   cx="50%" cy="50%" outerRadius={65} innerRadius={38} paddingAngle={2} strokeWidth={0}>
-                  {(strats || []).map((st, i) => (
-                    <Cell key={i} fill={STRAT_COLORS[st.strategy] || C.dim} />
-                  ))}
+                  {(strats || []).map((st, i) => <Cell key={i} fill={STRAT_COLORS[st.strategy] || C.dim} />)}
                 </Pie>
                 <Tooltip content={<ChartTip />} />
               </PieChart>
@@ -822,7 +882,7 @@ export default function App() {
                     <span className="text-[10px] text-[#9A9AAA] capitalize">{st.strategy?.replace(/_/g, " ")}</span>
                   </div>
                   <div className="flex items-center gap-2.5">
-                    <span className="text-[10px] font-bold text-[#E8E8F0]">{st.total.toLocaleString()}</span>
+                    <span className="text-[10px] font-bold">{st.total.toLocaleString()}</span>
                     <span className={`text-[10px] font-bold font-mono ${st.pnl >= 0 ? "text-[#00D4AA]" : "text-[#FF4455]"}`}>
                       {st.pnl >= 0 ? "+" : ""}{st.pnl.toFixed(2)}
                     </span>
@@ -833,7 +893,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* ══ TRADE ACTIVITY BAR CHART ══ */}
+        {/* ══ ACTIVITY CHART ══ */}
         <div className="card p-5">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -852,23 +912,19 @@ export default function App() {
               <YAxis stroke="rgba(255,255,255,0.04)"
                 tick={{ fill: "#6B6A7A", fontSize: 9, fontFamily: "JetBrains Mono" }} />
               <Tooltip content={<ChartTip />} />
-              <Bar dataKey="trades" fill="#E8650A" fillOpacity={0.70} radius={[2,2,0,0]} name="Trades" />
-              <Bar dataKey="won"    fill="#00D4AA" fillOpacity={0.70} radius={[2,2,0,0]} name="Won" />
+              <Bar dataKey="trades" fill="#E8650A" fillOpacity={0.68} radius={[2,2,0,0]} name="Trades" />
+              <Bar dataKey="won"    fill="#00D4AA" fillOpacity={0.68} radius={[2,2,0,0]} name="Won" />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
-        {/* ══ STRATEGY TABLE ══ */}
+        {/* ══ STRATEGY CARDS (v4.1) ══ */}
         <StrategyTable strats={strats} />
 
         {/* ══ LIVE FEED + SELF-IMPROVEMENT ══ */}
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-          <div className="lg:col-span-3">
-            <LiveFeed trades={trades} />
-          </div>
-          <div className="lg:col-span-2">
-            <SelfImprovementPanel patterns={patterns} />
-          </div>
+          <div className="lg:col-span-3"><LiveFeed trades={trades} /></div>
+          <div className="lg:col-span-2"><SelfImprovementLog patterns={patterns} /></div>
         </div>
 
         {/* ══ FOOTER ══ */}
@@ -877,7 +933,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <Cpu size={11} className="text-[#2A2A3E]" />
               <p className="text-[9px] font-bold text-[#2A2A3E] uppercase tracking-[0.2em]">
-                NEXUS OS · POLYBOT v4.0 · PAPER MODE · {new Date().getFullYear()}
+                NEXUS OS · POLYBOT v4.1 · PAPER MODE · {new Date().getFullYear()}
               </p>
             </div>
             <div className="flex items-center gap-4">
@@ -888,8 +944,7 @@ export default function App() {
               ].map(({ icon: Icon, label, href }) => (
                 <a key={label} href={href} target="_blank" rel="noreferrer"
                   className="flex items-center gap-1.5 text-[10px] font-semibold text-[#3A3A5A] hover:text-[#E8650A] transition-colors">
-                  <Icon size={11} />
-                  <span>{label}</span>
+                  <Icon size={11} /><span>{label}</span>
                 </a>
               ))}
             </div>
